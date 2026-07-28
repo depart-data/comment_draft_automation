@@ -7,11 +7,8 @@ extract/build_section2_highlights.py
 - 타겟층(연령·성별)별로 클릭이 가장 높았던 콘텐츠
 - 타겟층별로 노출이 가장 높았던 콘텐츠
 
-"1등이 무엇인지"는 사실 판단이라 AI가 아니라 파이썬으로 직접 계산합니다.
-(AI는 이 결과를 정해진 양식으로 포맷팅하는 역할만 합니다 — prompts/prompt_section2.py)
-
-입력: extract/build_campaign_report.py의 결과 중 data["traffic"] (트래픽 그룹)
-      config.accounts.get_target_segments(ad_account_id)로 타겟층 목록 조회
+입력: data["traffic"] (build_campaign_report.py의 _summarize_group() 결과 —
+      단일 캠페인이든 여러 캠페인 합계든 구조만 같으면 그대로 재사용 가능)
 """
 
 import os
@@ -20,14 +17,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db_connect import run_query
 
-# config.accounts의 타겟 세그먼트는 ig_insights_demographics 기준 약자(M/F/U)를 쓰지만,
-# ad_performance_daily는 전체 단어(male/female/unknown)를 씁니다. 이 차이 때문에
-# 쿼리가 매칭되지 않는 문제가 있어 여기서 변환합니다.
 GENDER_CODE_TO_AD_PERF = {"M": "male", "F": "female", "U": "unknown"}
 
 
 def _flatten_traffic_ads(traffic_group: dict) -> list:
-    """트래픽 그룹의 모든 캠페인 내 광고를 하나의 리스트로 펼칩니다."""
     ads = []
     for c in traffic_group.get("campaigns", []):
         ads.extend(c["ads"])
@@ -35,7 +28,6 @@ def _flatten_traffic_ads(traffic_group: dict) -> list:
 
 
 def get_top_ctr_ad(traffic_group: dict):
-    """CTR이 가장 높았던 콘텐츠를 찾습니다."""
     ads = [a for a in _flatten_traffic_ads(traffic_group) if a["ctr"] is not None]
     if not ads:
         return None
@@ -43,7 +35,6 @@ def get_top_ctr_ad(traffic_group: dict):
 
 
 def get_best_cpc_ad(traffic_group: dict):
-    """광고비 효율(CPC가 가장 낮은)이 가장 좋았던 콘텐츠를 찾습니다."""
     candidates = []
     for a in _flatten_traffic_ads(traffic_group):
         if a["clicks"] > 0:
@@ -55,10 +46,6 @@ def get_best_cpc_ad(traffic_group: dict):
 
 
 def get_segment_top_ads(traffic_group: dict, age_range: str, gender: str, week_start: str, week_end: str) -> dict:
-    """
-    특정 타겟층(연령·성별)에서 클릭이 가장 높았던 콘텐츠와,
-    노출이 가장 높았던 콘텐츠를 각각 찾습니다.
-    """
     ads = _flatten_traffic_ads(traffic_group)
     ad_ids = [a["ad_id"] for a in ads]
     ad_name_map = {a["ad_id"]: a["ad_name"] for a in ads}
@@ -66,7 +53,6 @@ def get_segment_top_ads(traffic_group: dict, age_range: str, gender: str, week_s
     if not ad_ids:
         return {"top_click_ad": None, "top_impression_ad": None}
 
-    # ad_performance_daily는 gender를 전체 단어(male/female/unknown)로 저장하므로 변환
     ad_perf_gender = GENDER_CODE_TO_AD_PERF.get(gender, gender)
 
     query = """
@@ -99,22 +85,7 @@ def get_segment_top_ads(traffic_group: dict, age_range: str, gender: str, week_s
 def build_section2_highlights(data: dict, week_start: str, week_end: str, target_segments: list) -> dict:
     """
     섹션2에 필요한 모든 하이라이트를 조립합니다.
-
-    Args:
-        data: build_campaign_report_data()의 반환값 전체
-        week_start, week_end: 조회 주간
-        target_segments: config.accounts.get_target_segments(ad_account_id) 결과,
-                          [("18-24", "F"), ("25-34", "M"), ...] 형태
-
-    Returns:
-        dict: {
-            "top_ctr_ad": {"ad_name": ..., "ctr": ...} 또는 None,
-            "best_cpc_ad": {"ad_name": ..., "cpc": ...} 또는 None,
-            "segment_highlights": [
-                {"age_range": ..., "gender": ..., "top_click_ad": {...}, "top_impression_ad": {...}},
-                ...
-            ]
-        }
+    data["traffic"]에 들어온 캠페인(들)의 광고를 대상으로 계산합니다.
     """
     traffic_group = data["traffic"]
 

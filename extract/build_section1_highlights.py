@@ -7,9 +7,9 @@ extract/build_section1_highlights.py
 - 노출/클릭/도달 각각 기준 연령·성별 TOP3
 
 "TOP3가 무엇인지"는 사실 판단이라 AI가 아니라 파이썬으로 직접 계산합니다.
-(AI는 이 결과를 정해진 양식으로 포맷팅하는 역할만 합니다 — prompts/prompt_section1.py)
 
-입력: extract/build_campaign_report.py의 결과 중 data["traffic"] (트래픽 그룹)
+입력: data["traffic"] (build_campaign_report.py의 _summarize_group() 결과 —
+      단일 캠페인이든 여러 캠페인 합계든 구조만 같으면 그대로 재사용 가능)
 """
 
 import os
@@ -22,7 +22,6 @@ GENDER_LABEL = {"male": "남성", "female": "여성", "unknown": "성별 미상"
 
 
 def _flatten_traffic_ads(traffic_group: dict) -> list:
-    """트래픽 그룹의 모든 캠페인 내 광고를 하나의 리스트로 펼칩니다."""
     ads = []
     for c in traffic_group.get("campaigns", []):
         ads.extend(c["ads"])
@@ -30,10 +29,6 @@ def _flatten_traffic_ads(traffic_group: dict) -> list:
 
 
 def get_demo_breakdown_for_ads(ad_ids: list, week_start: str, week_end: str):
-    """
-    지정한 광고들(ad_ids) 전체를 합산해서, 연령·성별 조합별
-    노출/클릭/도달 합계를 가져옵니다.
-    """
     query = """
         SELECT age_range, gender,
                SUM(impressions) AS impressions,
@@ -47,7 +42,6 @@ def get_demo_breakdown_for_ads(ad_ids: list, week_start: str, week_end: str):
 
 
 def _top3(demo_df, metric: str) -> list:
-    """demo_df를 지정 지표(metric) 기준 내림차순 정렬해서 상위 3개를 반환합니다."""
     if demo_df.empty:
         return []
     sorted_df = demo_df.sort_values(metric, ascending=False).head(3)
@@ -60,13 +54,8 @@ def _top3(demo_df, metric: str) -> list:
 def build_section1_highlights(data: dict, week_start: str, week_end: str) -> dict:
     """
     섹션1에 필요한 모든 하이라이트를 조립합니다.
-
-    Args:
-        data: build_campaign_report_data()의 반환값 전체
-        week_start, week_end: 조회 주간
-
-    Returns:
-        dict 또는 None (트래픽 데이터가 없는 경우)
+    data["traffic"]에 들어온 캠페인(들)의 광고를 대상으로 계산합니다.
+    (호출부에서 캠페인 1개짜리 그룹을 넘기면 "그 캠페인만의" 섹션1이 됨)
     """
     traffic_group = data["traffic"]
     if not traffic_group.get("has_data"):

@@ -27,7 +27,10 @@ storage/save_draft.py
 
 필드 매핑 확정 사항:
     - title, focus, objectives, tags: 전부 NULL (사용 안 함)
-    - notes: 섹션1~3을 "## 섹션N" 마크다운으로 파이썬이 직접 합친 전체 텍스트
+    - notes: 트래픽 캠페인별 리포트(개수만큼 반복) + 섹션3을 "## " 마크다운
+             으로 파이썬이 직접 합친 전체 텍스트 (2026-07-28 개편 — 이전엔
+             섹션1/2/3 고정 3블록이었으나, 이제 캠페인이 여러 개면 그
+             개수만큼 블록이 반복됨. build_notes_markdown() 참고)
              (AI 프롬프트가 아니라 이 파일의 코드가 조립 — 형식 실수 방지)
     - 성공 시: status='draft', notes=조립된 텍스트, error_message=NULL
     - 실패 시: status='failed', notes="⚠️ 에러 발생", error_message=상세 원인
@@ -124,27 +127,25 @@ def get_sprint_number_for_client(client_id: int, week_start: str) -> int:
 
 def build_notes_markdown(report_sections: dict) -> str:
     """
-    섹션1~3 텍스트를 "## 섹션N" 마크다운 헤더로 구분해서 하나의 텍스트로
+    캠페인별 리포트 + 섹션3을 "## " 마크다운 헤더로 구분해서 하나의 텍스트로
     합칩니다. (AI가 아니라 파이썬 코드가 형식을 강제 — 형식 실수 방지)
 
+    2026-07-28 개편: 이전엔 {"section1","section2","section3"} 고정 3개
+    구조였으나, 이제 트래픽 캠페인이 여러 개면 그 개수만큼 블록이 반복됩니다.
+
     Args:
-        report_sections: {"section1": "...", "section2": "...", "section3": "..."}
-                          (ai/generate_report.py의 generate_weekly_report() 반환값,
-                          섹션4는 아직 리포트 생성에 반영되지 않으므로 포함되지 않음)
+        report_sections: ai/generate_report.py의 generate_weekly_report() 반환값
+                          {"campaigns": [{"campaign_name":..., "text":...}, ...],
+                           "section3": "..."}
 
     Returns:
-        str: "## 섹션1: 주간전체요약\\n...\\n\\n## 섹션2: ...\\n\\n## 섹션3: ..." 형태
+        str: "## 트래픽 캠페인 1: {name}\\n{text}\\n\\n...\\n\\n## 섹션3: 계정 성장지표\\n{text}" 형태
     """
-    section_titles = {
-        "section1": "섹션1: 주간전체요약",
-        "section2": "섹션2: 콘텐츠 하이라이트",
-        "section3": "섹션3: 계정 성장지표",
-    }
-
     blocks = []
-    for key in ["section1", "section2", "section3"]:
-        text = report_sections.get(key, "")
-        blocks.append(f"## {section_titles[key]}\n{text}")
+    for i, camp in enumerate(report_sections.get("campaigns", []), start=1):
+        blocks.append(f"## 트래픽 캠페인 {i}: {camp['campaign_name']}\n{camp['text']}")
+
+    blocks.append(f"## 섹션3: 계정 성장지표\n{report_sections.get('section3', '')}")
 
     return "\n\n".join(blocks)
 

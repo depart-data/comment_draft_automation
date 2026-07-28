@@ -28,6 +28,12 @@ DB 적재(storage/save_draft.py)가 실제로 연결되어 있습니다.
 sprint_number는 clients.sprint_anchor_date/sprint_anchor_number 기준으로
 save_draft_report() 내부에서 자동 계산됩니다 (2026-07-22 확정, 더 이상 임시값 아님).
 
+2026-07-28 개편: generate_weekly_report()의 반환 구조가
+{"section1","section2","section3"} 고정 3개에서
+{"campaigns": [{"campaign_name":..., "text":...}, ...], "section3": "..."}
+로 바뀌었습니다 (트래픽 캠페인이 여러 개면 각각 따로 리포트가 생성되므로).
+아래 콘솔 출력부도 이 구조에 맞게 캠페인 개수만큼 반복 출력합니다.
+
 ※ 이 파일 자체는 스케줄러가 아닙니다. 실행하면 즉시 1회 동작합니다.
    "매주 월요일/화요일 11시 자동 실행"은 이 파일을 호출하는 별도의 스케줄러
    (Windows 작업 스케줄러 / cron 등, config.settings.SCHEDULE_CRON 참고)가
@@ -85,9 +91,12 @@ def run_all_accounts(week_start: str, week_end: str) -> dict:
                 summary[ad_account_id] = {"status": "failed", "error": result["error"]}
                 continue
 
-            for section, text in result.items():
-                print(f"\n=== {section} ===")
-                print(text)
+            for i, camp in enumerate(result.get("campaigns", []), start=1):
+                print(f"\n=== 트래픽 캠페인 {i}: {camp['campaign_name']} ===")
+                print(camp["text"])
+
+            print(f"\n=== 섹션3: 계정 성장지표 ===")
+            print(result.get("section3", ""))
 
             save_draft_report(ad_account_id, week_start, report_sections=result)
             print(f"\n✅ sprint_notes_drafts에 저장 완료 (ad_account_id={ad_account_id})")

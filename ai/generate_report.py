@@ -1,19 +1,24 @@
 """
 ai/generate_report.py
 
-extract/에서 뽑은 데이터를 prompts/combined로 하나의 프롬프트로 합치고,
-ai/gemini_client.py의 구조화 출력으로 Gemini API를 "계정당 1회만" 호출해서
-섹션1·2·3을 동시에 만듭니다.
+extract/build_campaign_report.py의 build_per_campaign_report()를 사용해서,
+트래픽 캠페인을 "각각 따로" AI로 정리하고, 계정 성장지표(섹션3)는 계정
+전체 기준으로 딱 1번만 정리합니다. (2026-07-28 개편)
 
-(이전에는 섹션별로 3회 호출했으나, 하루 요청 한도가 20회로 확인되어
- 계정당 1회로 줄여 처리 가능한 계정 수를 3배 이상 늘렸습니다.)
+이전에는 캠페인들을 전부 합쳐서 섹션1·2를 만들었으나, 같은 주에 정규
+주간 캠페인과 특별 캠페인(예: "팔로워 상위 5개")이 함께 잡히면 콘텐츠
+개수가 왜곡되는 문제가 있었습니다. 이제는 캠페인별로 분리해서 각각 AI
+호출 1회(섹션1+2)를 하고, 섹션3은 캠페인과 무관하므로 별도로 1회만
+호출합니다. 계정당 총 호출 횟수 = (트래픽 캠페인 수 + 1).
+(하루 요청 한도 500회 확인 후, 이 정도 호출 증가는 문제없다고 판단)
 
-데이터가 없는 섹션(예: 트래픽 캠페인이 없는 주)은 프롬프트에 아예 포함하지
-않고, AI 호출 없이 정적 안내 메시지로 처리합니다.
+기존 prompts/prompt_combined.py를 그대로 재사용합니다 — 캠페인별로는
+{"section1":..., "section2":...}만 넣어서 호출하고, 섹션3은
+{"section3":...}만 넣어서 별도 호출합니다.
 
-전부 성공하거나 전부 실패하는 방식입니다 (부분 성공 저장 없음). 실패 시
-"[combined] 생성 중 실패: (원인)" 형태의 단일 메시지로 예외를 발생시킵니다.
-(섹션별 실패 위치 구분은 통합 호출 방식의 트레이드오프로 포기함)
+전부 성공하거나, 실패한 지점(어느 캠페인인지 / 섹션3인지)을 정확히
+알 수 있게 태그가 붙은 메시지로 예외를 발생시킵니다. 하나라도 실패하면
+그 시점에서 중단됩니다 (부분 성공 저장 없음, 이전과 동일한 원칙 유지).
 
 사전 준비:
     config/, extract/, prompts/, ai/ 폴더가 모두 프로젝트 루트 아래에 있어야 합니다.
@@ -30,83 +35,95 @@ sys.path.insert(0, os.path.join(_PROJECT_ROOT, "extract"))
 sys.path.insert(0, os.path.join(_PROJECT_ROOT, "prompts"))
 sys.path.insert(0, _THIS_DIR)
 
-from build_campaign_report import build_campaign_report_data
-from build_section1_highlights import build_section1_highlights
-from build_section2_highlights import build_section2_highlights
+from build_campaign_report import build_per_campaign_report
 from prompt_combined import build_prompt_combined, build_response_schema
 from gemini_client import generate_structured_content
-from config.accounts import get_target_segments
 
 
 def generate_weekly_report(ad_account_id: int, week_start: str, week_end: str) -> dict:
     """
-    지정 계정·주간의 리포트를 섹션1·2·3 한 번의 AI 호출로 생성합니다.
+    지정 계정·주간의 리포트를 생성합니다. 트래픽 캠페인마다 각각 섹션1+2를
+    만들고, 섹션3(계정 전체)은 1번만 만듭니다.
 
     Returns:
-        dict: {"section1": ..., "section2": ..., "section3": ...}
-              또는 {"error": ...} (데이터 자체가 없는 경우)
+        dict: {
+            "campaigns": [
+                {"campaign_name": ..., "text": "섹션1+2 텍스트"},
+                ...
+            ],
+            "section3": "섹션3 텍스트"
+        }
+        또는 {"error": ...} (데이터 자체가 없는 경우)
 
     Raises:
-        RuntimeError: AI 생성에 실패한 경우. 메시지 형식: "[combined] 생성 중 실패: (원인)"
-                      이 메시지는 나중에 storage/save_draft.py에서 error_message와
-                      section1~3_text 컬럼에 동일하게 저장할 용도입니다.
+        RuntimeError: AI 생성 실패 시. 메시지에 어느 캠페인/섹션에서
+                      실패했는지 태그가 붙습니다
+                      (예: "[캠페인: [디파트]260720 - S34 트래픽] 생성 중 실패: ...").
+                      이 메시지는 storage/save_draft.py에서 error_message와
+                      notes에 동일하게 저장됩니다.
     """
-    data = build_campaign_report_data(ad_account_id, week_start, week_end)
+    data = build_per_campaign_report(ad_account_id, week_start, week_end)
     if "error" in data:
         return {"error": data["error"]}
 
-    report_sections = {}
-    section_data_for_ai = {}
+    campaign_reports = []
+    for camp in data["traffic_campaigns"]:
+        if camp["section1"] is None:
+            campaign_reports.append({
+                "campaign_name": camp["campaign_name"],
+                "text": "이 캠페인은 데이터가 없어 리포트를 생성할 수 없습니다.",
+            })
+            continue
 
-    # 섹션1 (데이터 있으면 AI 호출 대상에 포함, 없으면 정적 메시지)
-    if data["traffic"]["has_data"]:
-        section_data_for_ai["section1"] = build_section1_highlights(data, week_start, week_end)
+        section_data_for_ai = {"section1": camp["section1"], "section2": camp["section2"]}
+        prompt = build_prompt_combined(section_data_for_ai)
+        schema = build_response_schema(["section1", "section2"])
+
+        try:
+            ai_result = generate_structured_content(prompt, schema)
+        except Exception as e:
+            raise RuntimeError(f"[캠페인: {camp['campaign_name']}] 생성 중 실패: {e}") from e
+
+        combined_text = ai_result["section1"] + "\n\n" + ai_result["section2"]
+        campaign_reports.append({
+            "campaign_name": camp["campaign_name"],
+            "text": combined_text,
+        })
+
+    account_growth = data["account_growth"]
+    if "error" in account_growth:
+        section3_text = account_growth["error"]
     else:
-        report_sections["section1"] = "⚠️ 이 기간에 트래픽 캠페인이 없어 섹션1을 생성할 수 없습니다."
+        prompt3 = build_prompt_combined({"section3": account_growth})
+        schema3 = build_response_schema(["section3"])
+        try:
+            ai_result3 = generate_structured_content(prompt3, schema3)
+        except Exception as e:
+            raise RuntimeError(f"[섹션3] 생성 중 실패: {e}") from e
+        section3_text = ai_result3["section3"]
 
-    # 섹션2 (데이터 있으면 AI 호출 대상에 포함, 없으면 정적 메시지)
-    if data["traffic"]["has_data"]:
-        target_segments = get_target_segments(ad_account_id)
-        section_data_for_ai["section2"] = build_section2_highlights(data, week_start, week_end, target_segments)
-    else:
-        report_sections["section2"] = "⚠️ 이 기간에 트래픽 캠페인이 없어 섹션2를 생성할 수 없습니다."
-
-    # 섹션3 (데이터 있으면 AI 호출 대상에 포함, 없으면 정적 메시지)
-    if "error" not in data["account_growth"]:
-        section_data_for_ai["section3"] = data["account_growth"]
-    else:
-        report_sections["section3"] = f"⚠️ {data['account_growth']['error']}"
-
-    # AI로 만들 섹션이 하나도 없으면, API 호출 없이 정적 메시지만 반환
-    if not section_data_for_ai:
-        return report_sections
-
-    prompt = build_prompt_combined(section_data_for_ai)
-    schema = build_response_schema(list(section_data_for_ai.keys()))
-
-    try:
-        ai_result = generate_structured_content(prompt, schema)
-    except Exception as e:
-        raise RuntimeError(f"[combined] 생성 중 실패: {e}") from e
-
-    report_sections.update(ai_result)
-    return report_sections
+    return {
+        "campaigns": campaign_reports,
+        "section3": section3_text,
+    }
 
 
 if __name__ == "__main__":
     AD_ACCOUNT_ID = 14
-    WEEK_START = "2026-07-06"
-    WEEK_END = "2026-07-12"
+    WEEK_START = "2026-07-20"
+    WEEK_END = "2026-07-26"
 
     try:
         result = generate_weekly_report(AD_ACCOUNT_ID, WEEK_START, WEEK_END)
 
         if "error" in result:
-            print(f"⚠️ {result['error']}")
+            print(result["error"])
         else:
-            for section in ["section1", "section2", "section3"]:
-                print(f"=== {section} ===")
-                print(result.get(section, "(없음)"))
+            for i, camp in enumerate(result["campaigns"], start=1):
+                print(f"=== 트래픽 캠페인 {i}: {camp['campaign_name']} ===")
+                print(camp["text"])
                 print()
+            print("=== 섹션3: 계정 성장지표 ===")
+            print(result["section3"])
     except RuntimeError as e:
-        print(f"❌ 리포트 생성 실패: {e}")
+        print(f"리포트 생성 실패: {e}")

@@ -1,26 +1,32 @@
 """
 extract/build_campaign_report.py
 
-캠페인·광고 단위 트래픽/구매전환 성과 + WoW 비교 + 계정 성장지표(섹션3)를
-전부 통합해서 뽑아내는 메인 오케스트레이터입니다.
+캠페인·광고 단위 트래픽 성과 + 계정 성장지표(섹션3)를 뽑아내는 메인
+오케스트레이터입니다.
 
-로직:
-1) 대상: ad_account_id 직접 지정 (나중에 자동화 단계에서는 config.accounts의
-   계정 목록을 순회)
-2) 캠페인 식별: campaigns.fb_created_time이 지정 주간의 월~금 사이인 캠페인만
-   (캠페인명에 config.settings.CAMPAIGN_NAME_KEYWORDS 포함된 대행 캠페인만 대상)
+로직 (2026-07-28 개편):
+1) 대상: ad_account_id 직접 지정
+2) 캠페인 식별: campaigns.fb_created_time이 지정 주간의 월~금 사이인 캠페인 중,
+   트래픽 또는 구매전환 목적이면서 캠페인명에
+   config.settings.CAMPAIGN_NAME_KEYWORDS(depart/디파트) 포함된 캠페인만 식별
+   (스프린트 번호 필터는 제거됨 — clients.sprint_anchor_number가 클라이언트
+    대부분 미설정(기본값 1) 상태로 확인되어, 계산된 번호를 신뢰할 수 없었음.
+    개발팀이 각 클라이언트의 정확한 sprint_anchor_number를 재입력하기 전까지는
+    이 필터를 사용하지 않기로 함)
+   config.accounts.NO_NAME_FILTER_ACCOUNTS(디파트 자체 운영 계정)는
+   이름 조건 자체를 건너뜁니다.
 3) 성과 집계: 캠페인 시작 요일과 무관하게, 그 주 일요일까지 전체 기간으로 고정
-4) 캠페인별 노출/도달/클릭/광고비/CTR/구매/ROAS를 원재료+파생지표로 수집,
-   트래픽/구매전환을 분리해서 각각 전체 합계 및 평균 계산
-   (한쪽 유형이 아예 없는 브랜드도 있으므로, 없으면 "해당 없음"으로 명확히 구분)
-5) 캠페인 유형(트래픽/구매전환)별 WoW 비교
-6) 계정 성장지표(섹션3): 팔로워(초기대비/전주대비/전월대비/메인타겟층),
-   조회수·프로필방문·좋아요(전주대비), 전체상호작용(전주대비/전월대비)
-
-※ 이 단계에서는 DB 적재 없이 결과만 출력합니다 (초안 테이블은 추후 별도 작업).
+4) 섹션1·2는 "캠페인별로 각각 따로" 생성합니다 (전체 합산 X). 같은 주에
+   정규 주간 캠페인과 특별 캠페인(예: "팔로워 상위 5개")이 함께 잡혀도,
+   섞어서 하나로 뭉치지 않고 캠페인명과 함께 각각 블록으로 보여줘서
+   사람이 눈으로 구분할 수 있게 합니다. (구매전환은 리포트에 출력하지 않음
+   — 기존에 확정된 방침대로, 트래픽만 리포트에 반영)
+5) 계정 성장지표(섹션3)는 캠페인과 무관한 계정 전체 값이므로, 딱 1번만 출력
 
 사전 준비:
-    extract/db_connect.py, extract/build_section3_comparisons.py,
+    extract/db_connect.py, extract/client_utils.py,
+    extract/build_section1_highlights.py, extract/build_section2_highlights.py,
+    extract/build_section3_comparisons.py,
     config/settings.py, config/accounts.py 가 있는 프로젝트 구조여야 합니다.
 """
 
@@ -28,49 +34,37 @@ import os
 import sys
 import pandas as pd
 
-# 프로젝트 루트(extract/의 상위 폴더)를 sys.path에 추가해 config 패키지를 찾을 수 있게 함
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db_connect import run_query
+from build_section1_highlights import build_section1_highlights
+from build_section2_highlights import build_section2_highlights
 from build_section3_comparisons import build_section3_comparisons
 from config.settings import OBJECTIVE_MAP, CAMPAIGN_NAME_KEYWORDS, CREATION_WINDOW_DAYS, WOW_OFFSET_DAYS
 from config.accounts import get_target_segments, is_name_filter_exempt
 
 
-# ══════════════════════════════════════════════════════════════
-#  ⚙️  테스트 설정
-# ══════════════════════════════════════════════════════════════
 AD_ACCOUNT_ID = 14
-WEEK_START = "2026-07-06"   # 월요일 — 캠페인 식별 시작일 & 성과 집계 시작일
-WEEK_END = "2026-07-12"     # 일요일 — 성과 집계 종료일 (캠페인 시작일 무관하게 고정)
-# 캠페인 식별 종료일은 config.settings.CREATION_WINDOW_DAYS(기본 4일 -> 금요일)로 자동 계산됨
-# ══════════════════════════════════════════════════════════════
+WEEK_START = "2026-07-20"
+WEEK_END = "2026-07-26"
 
-# objective 값 -> "traffic"/"sales" 역매핑 (트래픽/구매전환 외 목적은 리포트 범위 밖)
 OBJECTIVE_TO_TYPE = {obj: t for t, objs in OBJECTIVE_MAP.items() for obj in objs}
 
-
-# ------------------------------------------------------------
-# 1. 캠페인 식별 (월~금 생성된 캠페인만, 트래픽/구매전환 objective만)
-# ------------------------------------------------------------
 
 def get_campaigns_in_creation_window(ad_account_id: int, week_start: str) -> pd.DataFrame:
     """
     지정 주간의 월요일~금요일 사이에 생성된 캠페인 중,
-    트래픽 또는 구매전환 목적이면서 캠페인명에 config.settings.CAMPAIGN_NAME_KEYWORDS
-    중 하나라도 포함된 캠페인만 식별합니다.
-    (주말엔 보통 캠페인을 새로 만들지 않는다는 전제)
-    (개별 브랜드사가 자체적으로 별도 캠페인을 돌릴 수 있어, 대행 캠페인만 골라내기 위한 필터)
+    트래픽 또는 구매전환 목적이면서 캠페인명에
+    config.settings.CAMPAIGN_NAME_KEYWORDS 중 하나가 포함된 캠페인만 식별합니다.
+    (스프린트 번호 필터는 데이터 신뢰도 문제로 제거됨 — 위 모듈 docstring 참고)
 
-    ※ config.accounts.NO_NAME_FILTER_ACCOUNTS에 등록된 계정(디파트 자체 운영
-      계정)은 캠페인명에 depart/디파트가 안 붙으므로, 이름 조건 없이 전부
-      조회합니다 (2026-07-22 확정).
+    config.accounts.NO_NAME_FILTER_ACCOUNTS에 등록된 계정(디파트 자체 운영
+    계정)은 이름 조건 자체를 건너뛰고 objective/기간 조건만 적용합니다.
     """
     creation_end = (pd.to_datetime(week_start) + pd.Timedelta(days=CREATION_WINDOW_DAYS)).strftime("%Y-%m-%d")
     all_objectives = [obj for objs in OBJECTIVE_MAP.values() for obj in objs]
 
     if is_name_filter_exempt(ad_account_id):
-        # 이름 필터 없이 objective/기간 조건만 적용
         query = """
             SELECT id AS campaign_id, name AS campaign_name, objective, fb_created_time
             FROM campaigns
@@ -83,7 +77,6 @@ def get_campaigns_in_creation_window(ad_account_id: int, week_start: str) -> pd.
         params = [ad_account_id, week_start, creation_end, all_objectives]
         return run_query(query, params=tuple(params))
 
-    # 캠페인명 키워드 필터를 동적으로 구성 (OR 조건)
     name_conditions = " OR ".join(["name ILIKE %s"] * len(CAMPAIGN_NAME_KEYWORDS))
     name_params = [f"%{kw}%" for kw in CAMPAIGN_NAME_KEYWORDS]
 
@@ -101,15 +94,7 @@ def get_campaigns_in_creation_window(ad_account_id: int, week_start: str) -> pd.
     return run_query(query, params=tuple(params))
 
 
-# ------------------------------------------------------------
-# 2. 캠페인별 성과 집계 (일요일까지 고정 기간)
-# ------------------------------------------------------------
-
 def get_campaign_performance(campaign_id: int, week_start: str, week_end: str) -> dict:
-    """
-    특정 캠페인에 속한 모든 광고(ad_sets -> ads)의 성과를
-    week_start~week_end 기간으로 SUM해서 원재료를 가져옵니다.
-    """
     query = """
         SELECT
             SUM(p.impressions) AS impressions,
@@ -146,10 +131,6 @@ def get_campaign_performance(campaign_id: int, week_start: str, week_end: str) -
 
 
 def get_ads_in_campaign_performance(campaign_id: int, week_start: str, week_end: str) -> list:
-    """
-    특정 캠페인에 속한 광고 각각에 대해, 캠페인 레벨과 동일한 지표
-    (노출/도달/클릭/광고비/CTR/구매/ROAS)를 개별적으로 계산합니다.
-    """
     query = """
         SELECT
             a.id AS ad_id,
@@ -193,16 +174,7 @@ def get_ads_in_campaign_performance(campaign_id: int, week_start: str, week_end:
     return ads
 
 
-# ------------------------------------------------------------
-# 3. 전체 조립: 유형(트래픽/구매전환)별로 분리해서 집계 + 계정 성장지표
-# ------------------------------------------------------------
-
 def _summarize_group(campaign_results: list) -> dict:
-    """
-    같은 유형(트래픽 또는 구매전환) 캠페인 리스트를 받아 합계/평균을 계산합니다.
-    캠페인이 하나도 없으면 has_data=False로 표시해서, 이후 리포트 작성 시
-    "해당 없음"으로 명확히 구분할 수 있게 합니다.
-    """
     if not campaign_results:
         return {
             "has_data": False,
@@ -252,12 +224,11 @@ def build_campaign_report_data(ad_account_id: int, week_start: str, week_end: st
     if campaigns_df.empty:
         return {"error": f"ad_account_id={ad_account_id}, {week_start}(월)~금 사이에 생성된 트래픽/구매전환 캠페인이 없습니다."}
 
-    # 캠페인을 유형(traffic/sales)별로 분리해서 수집
     grouped = {"traffic": [], "sales": []}
     for _, c in campaigns_df.iterrows():
         campaign_type = OBJECTIVE_TO_TYPE.get(c["objective"])
         if campaign_type is None:
-            continue  # 트래픽/구매전환 외 objective는 리포트 범위 밖 (get_campaigns_in_creation_window에서 이미 필터링됨)
+            continue
 
         perf = get_campaign_performance(c["campaign_id"], week_start, week_end)
         ads = get_ads_in_campaign_performance(c["campaign_id"], week_start, week_end)
@@ -270,7 +241,6 @@ def build_campaign_report_data(ad_account_id: int, week_start: str, week_end: st
             "ads": ads,
         })
 
-    # ig_account_id 조회 (계정 성장지표용)
     ig_id_query = "SELECT ig_account_id FROM ad_accounts WHERE id = %s;"
     ig_df = run_query(ig_id_query, params=(ad_account_id,))
     ig_id = int(ig_df.iloc[0]["ig_account_id"]) if not ig_df.empty and pd.notna(ig_df.iloc[0]["ig_account_id"]) else None
@@ -287,17 +257,64 @@ def build_campaign_report_data(ad_account_id: int, week_start: str, week_end: st
     }
 
 
+def build_per_campaign_report(ad_account_id: int, week_start: str, week_end: str) -> dict:
+    """
+    섹션1·2를 "캠페인별로 각각" 생성합니다 (전체 합산 X).
+    같은 주에 정규 주간 캠페인과 특별 캠페인이 함께 잡혀도, 섞지 않고
+    캠페인명과 함께 각각 블록으로 반환해서 사람이 눈으로 구분할 수 있게 합니다.
+    구매전환은 리포트에 포함하지 않습니다 (트래픽만 반영하는 기존 방침).
+    섹션3(계정 성장지표)은 캠페인과 무관한 계정 전체 값이라 딱 1번만 포함됩니다.
+
+    Returns:
+        dict: {
+            "traffic_campaigns": [
+                {"campaign_name": ..., "campaign_id": ..., "section1": {...}, "section2": {...}},
+                ...
+            ],
+            "account_growth": {...}  # 섹션3, 계정 전체 1개
+        }
+        또는 {"error": ...} (데이터 자체가 없는 경우)
+    """
+    data = build_campaign_report_data(ad_account_id, week_start, week_end)
+    if "error" in data:
+        return {"error": data["error"]}
+
+    target_segments = get_target_segments(ad_account_id)
+    traffic_campaigns_report = []
+
+    for campaign in data["traffic"].get("campaigns", []):
+        # 캠페인 1개짜리 그룹으로 다시 요약 (build_section1/2_highlights가
+        # 기대하는 구조 그대로 재사용하기 위함 — 캠페인 개수만 1개로 좁힌 것)
+        single_campaign_group = _summarize_group([campaign])
+        synthetic_data = {"traffic": single_campaign_group}
+
+        section1 = build_section1_highlights(synthetic_data, week_start, week_end)
+        section2 = build_section2_highlights(synthetic_data, week_start, week_end, target_segments)
+
+        traffic_campaigns_report.append({
+            "campaign_id": campaign["campaign_id"],
+            "campaign_name": campaign["campaign_name"],
+            "section1": section1,
+            "section2": section2,
+        })
+
+    return {
+        "traffic_campaigns": traffic_campaigns_report,
+        "account_growth": data["account_growth"],
+    }
+
+
 def _print_group(label: str, group: dict):
     print(f"=== {label} ===\n")
     if not group["has_data"]:
-        print(f"⚠️ 해당 없음 — 이 기간에 {label} 캠페인이 없습니다.\n")
+        print(f"해당 없음 - 이 기간에 {label} 캠페인이 없습니다.\n")
         return
 
     for c in group["campaigns"]:
         print(f"[{c['campaign_name']}] (campaign_id={c['campaign_id']}, objective={c['objective']}, 생성={c['fb_created_time']})")
         print(f"  노출: {c['impressions']:,} / 도달: {c['reach']:,} / 클릭: {c['clicks']:,} / 광고비: {c['spend']:,.0f}")
         print(f"  CTR: {c['ctr']}% / 구매: {c['purchase_count']}건 / 구매액: {c['purchase_value']:,.0f} / ROAS: {c['roas']}")
-        print(f"  └─ 캠페인 내 광고 {len(c['ads'])}개:")
+        print(f"  캠페인 내 광고 {len(c['ads'])}개:")
         for ad in c["ads"]:
             print(f"      [{ad['ad_name']}] (ad_id={ad['ad_id']})")
             print(f"        노출: {ad['impressions']:,} / 도달: {ad['reach']:,} / 클릭: {ad['clicks']:,} / 광고비: {ad['spend']:,.0f}")
@@ -312,10 +329,6 @@ def _print_group(label: str, group: dict):
     print()
 
 
-# ------------------------------------------------------------
-# 4. WoW 비교 (트래픽끼리, 구매전환끼리만 비교)
-# ------------------------------------------------------------
-
 WOW_FIELDS = [
     "campaign_count", "total_impressions", "total_clicks", "total_reach", "total_spend",
     "total_purchase_count", "total_purchase_value", "overall_ctr", "overall_roas",
@@ -323,7 +336,6 @@ WOW_FIELDS = [
 
 
 def _wow(current, previous):
-    """이번 주 값(current)과 지난 주 값(previous)을 비교해 증감·성장률을 계산합니다."""
     if current is None or previous is None:
         return {"value": current, "delta": None, "growth_pct": None}
     delta = current - previous
@@ -332,11 +344,6 @@ def _wow(current, previous):
 
 
 def build_wow_comparison(ad_account_id: int, this_week_start: str, this_week_end: str) -> dict:
-    """
-    지정한 이번 주(this_week_start~this_week_end)와 정확히 WOW_OFFSET_DAYS(기본 7)일
-    전인 지난 주를 같은 로직(캠페인명 키워드 필터 포함)으로 각각 집계한 뒤,
-    트래픽은 트래픽끼리, 구매전환은 구매전환끼리만 비교합니다.
-    """
     prev_week_start = (pd.to_datetime(this_week_start) - pd.Timedelta(days=WOW_OFFSET_DAYS)).strftime("%Y-%m-%d")
     prev_week_end = (pd.to_datetime(this_week_end) - pd.Timedelta(days=WOW_OFFSET_DAYS)).strftime("%Y-%m-%d")
 
@@ -345,7 +352,7 @@ def build_wow_comparison(ad_account_id: int, this_week_start: str, this_week_end
 
     result = {
         "prev_week_range": (prev_week_start, prev_week_end),
-        "prev_week_raw": prev_week,  # 검증용 — 지난 주 원본(캠페인·광고 상세 포함) 그대로 보존
+        "prev_week_raw": prev_week,
     }
 
     for campaign_type in ["traffic", "sales"]:
@@ -373,18 +380,41 @@ def build_wow_comparison(ad_account_id: int, this_week_start: str, this_week_end
 
 
 if __name__ == "__main__":
-    result = build_campaign_report_data(AD_ACCOUNT_ID, WEEK_START, WEEK_END)
+    result = build_per_campaign_report(AD_ACCOUNT_ID, WEEK_START, WEEK_END)
 
     if "error" in result:
-        print(f"⚠️ {result['error']}")
+        print(result["error"])
     else:
-        _print_group("트래픽", result["traffic"])
-        _print_group("구매전환", result["sales"])
+        for i, camp in enumerate(result["traffic_campaigns"], start=1):
+            print(f"=== 트래픽 캠페인 {i} : {camp['campaign_name']} ===\n")
 
-        print("=== 계정 성장지표 (섹션3) ===")
+            s1 = camp["section1"]
+            if s1 is None:
+                print("(이 캠페인은 데이터가 없어 섹션1을 생성할 수 없습니다)\n")
+            else:
+                print("■ 이번주 평균 CTR")
+                print(f"전체 평균 CTR: {s1['avg_ctr']}% (총 {s1['content_count']}개 콘텐츠 평균)")
+                print("■ 주간 총 집행 요약")
+                print(f"총 노출: {s1['total_impressions']:,} / 총 클릭: {s1['total_clicks']:,} / 총 도달: {s1['total_reach']:,}")
+                print("■ 노출 연령·성별 TOP3")
+                for idx, item in enumerate(s1["top3_by_impressions"], start=1):
+                    print(f"{idx}순위: {item['age_range']}, {item['gender']}")
+
+            s2 = camp["section2"]
+            print()
+            if s2["top_ctr_ad"]:
+                print(f"■ 클릭율이 가장 높았던 콘텐츠 (CTR = {s2['top_ctr_ad']['ctr']}%)")
+                print(s2["top_ctr_ad"]["ad_name"])
+            if s2["best_cpc_ad"]:
+                print(f"■ 광고비 효율이 가장 좋았던 콘텐츠 (CPC = {s2['best_cpc_ad']['cpc']}원)")
+                print(s2["best_cpc_ad"]["ad_name"])
+
+            print("\n" + "─" * 40 + "\n")
+
+        print("=== 섹션3: 계정 성장지표 (계정 전체, 캠페인 무관) ===\n")
         growth = result["account_growth"]
         if "error" in growth:
-            print(f"⚠️ {growth['error']}")
+            print(growth["error"])
         else:
             print("[팔로워]")
             print(f"  전주대비: {growth['followers']['wow']}")
@@ -399,29 +429,3 @@ if __name__ == "__main__":
             print("[전체상호작용]")
             print(f"  전주대비: {growth['total_interactions']['wow']}")
             print(f"  전월대비: {growth['total_interactions']['mom']}")
-
-    print("\n" + "=" * 60)
-    print(f"=== WoW 비교 (이번 주 {WEEK_START}~{WEEK_END} vs 지난 주) ===\n")
-    wow = build_wow_comparison(AD_ACCOUNT_ID, WEEK_START, WEEK_END)
-    print(f"지난 주 범위: {wow['prev_week_range'][0]} ~ {wow['prev_week_range'][1]}\n")
-    for campaign_type, label in [("traffic", "트래픽"), ("sales", "구매전환")]:
-        print(f"--- {label} WoW ---")
-        group = wow[campaign_type]
-        if not group["has_comparison"]:
-            print(f"⚠️ {group['note']}\n")
-            continue
-        print(f"(이번 주 데이터 존재: {group['this_week_has_data']} / 지난 주 데이터 존재: {group['prev_week_has_data']})")
-        for field in WOW_FIELDS:
-            m = group[field]
-            print(f"{field}: 이번주={m['value']} / 증감={m['delta']} / 성장률={m['growth_pct']}%")
-        print()
-
-    print("\n" + "=" * 60)
-    print(f"=== [검증용] 지난 주 원본 상세 ({wow['prev_week_range'][0]}~{wow['prev_week_range'][1]}) ===\n")
-    prev_raw = wow["prev_week_raw"]
-    if "error" in prev_raw:
-        print(f"⚠️ {prev_raw['error']}")
-    else:
-        _print_group("트래픽 (지난 주)", prev_raw["traffic"])
-        _print_group("구매전환 (지난 주)", prev_raw["sales"])
-        print()
