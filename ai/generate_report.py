@@ -84,7 +84,11 @@ def generate_weekly_report(ad_account_id: int, week_start: str, week_end: str) -
         except Exception as e:
             raise RuntimeError(f"[캠페인: {camp['campaign_name']}] 생성 중 실패: {e}") from e
 
-        combined_text = ai_result["section1"] + "\n\n" + ai_result["section2"]
+        # section1/section2는 줄 단위 배열로 응답받음 (prompts/prompt_combined.py 참고
+        # — Gemini가 통짜 문자열에서 줄바꿈을 가끔 안 지키는 문제 때문에 배열로 강제)
+        section1_text = "\n".join(ai_result["section1"])
+        section2_text = "\n".join(ai_result["section2"])
+        combined_text = section1_text + "\n\n" + section2_text
         campaign_reports.append({
             "campaign_name": camp["campaign_name"],
             "text": combined_text,
@@ -100,7 +104,7 @@ def generate_weekly_report(ad_account_id: int, week_start: str, week_end: str) -
             ai_result3 = generate_structured_content(prompt3, schema3)
         except Exception as e:
             raise RuntimeError(f"[섹션3] 생성 중 실패: {e}") from e
-        section3_text = ai_result3["section3"]
+        section3_text = "\n".join(ai_result3["section3"])
 
     return {
         "campaigns": campaign_reports,

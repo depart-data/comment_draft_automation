@@ -24,10 +24,19 @@ def build_response_schema(included_sections: list) -> dict:
     """
     포함된 섹션 이름 목록(예: ["section1", "section2"])에 대해서만
     JSON 스키마의 필수 필드로 지정합니다.
+
+    각 섹션은 통짜 문자열이 아니라 "줄 단위 문자열 배열"로 받습니다. 통짜
+    문자열로 받으면 Gemini가 가끔 줄바꿈(\\n)을 지키지 않고 한 줄로
+    이어붙여서 응답하는 문제가 있었습니다(2026-07-28 확인). 배열로 받으면
+    한 줄이 배열의 별도 원소가 되어 이어붙이기가 훨씬 어려워지고, 최종
+    줄바꿈은 파이썬이 "\\n".join()으로 직접 보장합니다.
     """
     return {
         "type": "object",
-        "properties": {name: {"type": "string"} for name in included_sections},
+        "properties": {
+            name: {"type": "array", "items": {"type": "string"}}
+            for name in included_sections
+        },
         "required": included_sections,
     }
 
@@ -140,7 +149,13 @@ def build_prompt_combined(section_data: dict) -> str:
 - 증감이 양수면 "증가", 음수면 "감소"라는 단어를 함께 표기합니다.
 - 각 섹션의 볼드 헤더(**)와 글머리 기호(*, ■) 구조를 그대로 유지합니다.
 - 반드시 JSON 형식으로만 응답하세요. {included_names} 키에 각각 아래 형식대로
-  작성한 텍스트를 문자열 값으로 담으세요.
+  작성한 텍스트를, 줄 단위로 나눈 문자열 배열로 담으세요.
+
+[배열 작성 규칙 — 반드시 지킬 것]
+- 아래 형식에서 줄이 바뀌는 지점마다 배열의 새 원소로 나누세요. 한 원소
+  안에 여러 줄을 합치지 마세요 (예: "■ 이번주 평균 CTR"과
+  "전체 평균 CTR: ..."은 반드시 서로 다른 원소여야 합니다).
+- 형식에 있는 빈 줄(문단 구분)은 빈 문자열("") 원소로 표현하세요.
 
 {format_blocks}
 
