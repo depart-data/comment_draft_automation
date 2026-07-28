@@ -3,12 +3,11 @@ storage/save_draft.py
 
 생성된 리포트 텍스트를 sprint_notes_drafts 테이블에 저장합니다.
 
-※ 아직 실제 테이블이 DB에 생성되지 않은 상태입니다 (개발팀 Prisma 마이그레이션
-   대기 중). 이 파일은 미리 구현해두는 것이며, 실제 실행(INSERT)은 테이블
-   생성 후에만 가능합니다. run_weekly_reports.py에서도 이 함수 호출부는
-   아직 주석 처리되어 있어, 지금 이 코드가 있어도 실제로 실행되지는 않습니다.
+테이블은 실제로 생성되어 있고, run_weekly_reports.py에서 정상적으로 호출되어
+저장됩니다 (2026-07-28 실행 확인).
 
-테이블 구조 (개발팀과 확정, 2026-07-21):
+테이블 구조 (2026-07-28 실제 스키마 재확인 — created_at 외에 updated_at도
+있음, 기존 문서에 누락되어 있었음):
     CREATE TABLE public.sprint_notes_drafts (
         id bigserial NOT NULL,
         client_id int8 NOT NULL,
@@ -22,6 +21,7 @@ storage/save_draft.py
         status varchar(20) DEFAULT 'draft'::character varying NOT NULL,
         error_message text NULL,
         created_at timestamptz DEFAULT now() NOT NULL,
+        updated_at timestamptz DEFAULT now() NOT NULL,
         CONSTRAINT sprint_notes_drafts_pkey PRIMARY KEY (id)
     );
 
@@ -214,12 +214,14 @@ def save_draft_report(
     try:
         with conn.cursor() as cur:
             if not existing_df.empty:
-                # 기존 행이 있으면 덮어쓰기 (created_at도 갱신해서 "언제 마지막으로
-                # 갱신됐는지"를 정확히 반영)
+                # 기존 행이 있으면 덮어쓰기. created_at(최초 생성 시각)은 그대로
+                # 두고, updated_at만 now()로 갱신해서 "언제 마지막으로 갱신됐는지"를
+                # 정확히 반영합니다 (2026-07-28 수정 — 이전에는 반대로 created_at을
+                # 덮어쓰고 updated_at은 건드리지 않아서 값이 거꾸로 찍혔음).
                 existing_id = int(existing_df.iloc[0]["id"])
                 update_query = """
                     UPDATE sprint_notes_drafts
-                    SET notes = %s, status = %s, error_message = %s, created_at = now()
+                    SET notes = %s, status = %s, error_message = %s, updated_at = now()
                     WHERE id = %s;
                 """
                 cur.execute(update_query, (notes, status, error_message_value, existing_id))

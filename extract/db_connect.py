@@ -29,6 +29,10 @@ DB_CONFIG = {
     "dbname": os.getenv("DB_NAME"),
     "user": os.getenv("DB_USER"),
     "password": os.getenv("DB_PASSWORD"),
+    # 세션 타임존을 명시적으로 Asia/Seoul로 고정합니다. DB 서버의 기본 세션
+    # 타임존이 UTC라서, 이걸 지정 안 하면 now()/created_at 같은 값이
+    # KST보다 9시간 느리게 찍힙니다 (2026-07-28 확인).
+    "options": "-c TimeZone=Asia/Seoul",
 }
 
 
