@@ -88,7 +88,8 @@ def generate_weekly_report(ad_account_id: int, week_start: str, week_end: str) -
         # — Gemini가 통짜 문자열에서 줄바꿈을 가끔 안 지키는 문제 때문에 배열로 강제)
         section1_text = "\n".join(ai_result["section1"])
         section2_text = "\n".join(ai_result["section2"])
-        combined_text = section1_text + "\n\n" + section2_text
+        # 캠페인명은 AI가 생성하는 게 아니라 파이썬이 그대로 붙임 (마크다운 헤더 없이 평문)
+        combined_text = camp["campaign_name"] + "\n\n" + section1_text + "\n\n" + section2_text
         campaign_reports.append({
             "campaign_name": camp["campaign_name"],
             "text": combined_text,
@@ -105,6 +106,10 @@ def generate_weekly_report(ad_account_id: int, week_start: str, week_end: str) -
         except Exception as e:
             raise RuntimeError(f"[섹션3] 생성 중 실패: {e}") from e
         section3_text = "\n".join(ai_result3["section3"])
+
+    # 섹션4는 아직 미구현(사람이 직접 작성하는 영역) — AI 생성 없이 빈 헤더만
+    # 파이썬이 고정 텍스트로 붙임 (AI가 근거 없는 내용을 지어내는 걸 방지)
+    section3_text = section3_text + "\n\n## 4. SNS 브랜딩 전략 코멘트\n\n(직접 작성)"
 
     return {
         "campaigns": campaign_reports,

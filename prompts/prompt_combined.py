@@ -44,6 +44,8 @@ def build_response_schema(included_sections: list) -> dict:
 # 섹션별 형식 템플릿 (각 prompts/prompt_sectionN.py의 "형식" 블록과 동일)
 _SECTION1_FORMAT = """[섹션1 형식 — section1 키에 아래 형식 그대로 작성]
 
+## 1. 주간 전체 요약
+
 ■ 이번주 평균 CTR
 전체 평균 CTR: [avg_ctr]% (총 [content_count]개 콘텐츠 평균)
 
@@ -69,6 +71,8 @@ _SECTION1_FORMAT = """[섹션1 형식 — section1 키에 아래 형식 그대�
 
 _SECTION2_FORMAT = """[섹션2 형식 — section2 키에 아래 형식 그대로 작성]
 
+## 2. 콘텐츠별 상세 브리핑
+
 ■ 클릭율이 가장 높았던 콘텐츠 (CTR = [top_ctr_ad.ctr]%)
 [top_ctr_ad.ad_name]
 
@@ -84,6 +88,8 @@ _SECTION2_FORMAT = """[섹션2 형식 — section2 키에 아래 형식 그대�
 (segment_highlights 배열의 항목 수만큼, 위 타겟층 두 항목씩 반복. gender는 M=남성,F=여성,U=성별 미상)"""
 
 _SECTION3_FORMAT = """[섹션3 형식 — section3 키에 아래 형식 그대로 작성]
+
+## 3. 계정 성장지표
 
 **1. 팔로워** (초기 대비 / 전주 대비)
 * 총 팔로워 수: [followers.wow.value]명
