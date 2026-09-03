@@ -158,11 +158,12 @@ def get_followers_near_date(ig_id: int, target_date: str):
     """
     target_date 이후 가장 가까운 날짜의 followers_count를 가져옵니다.
     (target_date 자체에 데이터가 없을 수 있으므로 '이후 최초 데이터'로 근사)
+    followers_count가 NULL인 날짜는 건너뜁니다 (데이터 수집 초기 결측 구간 대비).
     """
     query = """
         SELECT as_of_date, followers_count
         FROM ig_insights_total
-        WHERE ig_id = %s AND as_of_date >= %s
+        WHERE ig_id = %s AND as_of_date >= %s AND followers_count IS NOT NULL
         ORDER BY as_of_date ASC
         LIMIT 1;
     """
