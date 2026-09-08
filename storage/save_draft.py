@@ -139,13 +139,15 @@ def build_notes_markdown(report_sections: dict) -> str:
                            "section3": "..."}
 
     Returns:
-        str: "## 트래픽 캠페인 1: {name}\\n{text}\\n\\n...\\n\\n## 섹션3: 계정 성장지표\\n{text}" 형태
+        str: "## 트래픽 캠페인 1: {name}\\n{text}\\n\\n...\\n\\n{section3_text}" 형태
+             (section3_text는 AI가 생성한 "## 3. 계정 성장지표" 헤더를 그대로 포함하고
+             있으므로, 여기서 별도 헤더를 덧붙이지 않습니다 — 붙이면 헤더가 중복됩니다.)
     """
     blocks = []
     for i, camp in enumerate(report_sections.get("campaigns", []), start=1):
         blocks.append(f"## 트래픽 캠페인 {i}: {camp['campaign_name']}\n{camp['text']}")
 
-    blocks.append(f"## 섹션3: 계정 성장지표\n{report_sections.get('section3', '')}")
+    blocks.append(report_sections.get("section3", ""))
 
     return "\n\n".join(blocks)
 
