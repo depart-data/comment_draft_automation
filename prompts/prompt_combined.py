@@ -47,7 +47,7 @@ _SECTION1_FORMAT = """[섹션1 형식 — section1 키에 아래 형식 그대�
 ## 1. 주간 전체 요약
 
 ■ 이번주 평균 CTR
-전체 평균 CTR: ([total_clicks]/[total_impressions])*100% (총 [content_count]개 콘텐츠 평균)
+전체 평균 CTR: [overall_ctr]% (총 [content_count]개 콘텐츠 평균)
 
 ■ 주간 총 집행 요약
 총 노출: [total_impressions]

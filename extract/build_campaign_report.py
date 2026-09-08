@@ -393,7 +393,7 @@ if __name__ == "__main__":
                 print("(이 캠페인은 데이터가 없어 섹션1을 생성할 수 없습니다)\n")
             else:
                 print("■ 이번주 평균 CTR")
-                print(f"전체 평균 CTR: {s1['avg_ctr']}% (총 {s1['content_count']}개 콘텐츠 평균)")
+                print(f"전체 평균 CTR: {s1['overall_ctr']}% (총 {s1['content_count']}개 콘텐츠 평균)")
                 print("■ 주간 총 집행 요약")
                 print(f"총 노출: {s1['total_impressions']:,} / 총 클릭: {s1['total_clicks']:,} / 총 도달: {s1['total_reach']:,}")
                 print("■ 노출 연령·성별 TOP3")
